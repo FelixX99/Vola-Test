@@ -1,0 +1,72 @@
+name: API Release Automation
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  create-release:
+    # Avoid infinite loops if any automated tool commits back to the repo
+    if: "!contains(github.event.head_commit.message, 'chore: bump')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Calculate Version and Publish Release
+        run: |
+          # 1. Fetch the list of releases (returns an array)
+          # We use the list endpoint because it's more reliable than /latest
+          curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases" > releases_list.json
+
+          # 2. Extract tag_name from the first item in the array [0]
+          LATEST_TAG=$(jq -r '.[0].tag_name // "null"' releases_list.json)
+
+          # 3. Handle the case where no releases exist yet
+          if [[ "$LATEST_TAG" == "null" || -z "$LATEST_TAG" ]]; then
+            echo "No releases found. Starting at v0.0.0"
+            LATEST_TAG="v0.0.0"
+          fi
+          
+          echo "Current Version detected: $LATEST_TAG"
+
+          # 4. Extract digits (remove 'v' prefix if present)
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # 5. Get the latest commit message from GitHub Context
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          
+          # 6. Determine bump logic
+          if [[ "$COMMIT_MSG" == *"major"* ]]; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif [[ "$COMMIT_MSG" == *"feat"* ]]; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          elif [[ "$COMMIT_MSG" == *"fix"* ]]; then
+            PATCH=$((PATCH + 1))
+          else
+            echo "No version keywords (major, feat, fix) found. Skipping release."
+            exit 0
+          fi
+
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          echo "New Version: $NEW_TAG"
+
+          # 7. Create the new GitHub Release via API
+          # This automatically creates the associated Git Tag
+          curl -X POST -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases" \
+            -d @- <<EOF
+          {
+            "tag_name":"$NEW_TAG",
+            "target_commitish":"${{ github.sha }}",
+            "name":"$NEW_TAG",
+            "body":"Automated release for commit: $COMMIT_MSG",
+            "draft":false,
+            "prerelease":false
+          }
+          EOF
+
+          echo "Successfully published Release $NEW_TAG"
