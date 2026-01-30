@@ -1,4 +1,4 @@
 [project]
 name = "Vola-Test"
-version = "0.0.2"
+version = "0.2.2"
 description = "Volatility analytics system Reference"
